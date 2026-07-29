@@ -219,12 +219,28 @@ async def scrape_search(
     base = f"https://www.reddit.com/r/{subreddit}/search/" if subreddit else "https://www.reddit.com/search/"
     url = f"{base}?q={query}&sort={sort}&t={time_filter}&type=link"
 
+    import logging
+    log = logging.getLogger(__name__)
+
     async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
         page = await browser.new_page()
         # Visit homepage first to establish session (required for search to render posts)
         await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30000)
+        home_title = await page.title()
+        log.info(f"Homepage title: {home_title!r}")
         await asyncio.sleep(2)
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        search_title = await page.title()
+        log.info(f"Search page title: {search_title!r}")
+        # Count key elements to diagnose what loaded
+        card_count = await page.evaluate(
+            "document.querySelectorAll('[data-testid=\"search-post-with-content-preview\"]').length"
+        )
+        shreddit_count = await page.evaluate("document.querySelectorAll('shreddit-post').length")
+        log.info(f"Search cards: {card_count}, shreddit-posts: {shreddit_count}")
+        if card_count == 0 and shreddit_count == 0:
+            body_snippet = (await page.inner_text("body"))[:300].replace("\n", " ")
+            log.warning(f"Page body snippet: {body_snippet!r}")
         results = await _scroll_and_collect_search(page, max_results)
 
     return [{**p, "source": "search", "query": query} for p in results]
