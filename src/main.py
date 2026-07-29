@@ -29,20 +29,8 @@ async def main() -> None:
             )
             return
 
-        proxy_config = None
         proxy_url = None
-        try:
-            # Residential proxies are required — Reddit blocks datacenter IPs.
-            proxy_config = await Actor.create_proxy_configuration(groups=["RESIDENTIAL"])
-            proxy_url = await proxy_config.new_url() if proxy_config else None
-            if proxy_url:
-                import re
-                masked = re.sub(r"://([^:]+):([^@]+)@", "://***:***@", proxy_url)
-                Actor.log.info(f"Proxy configured: {masked}")
-            else:
-                Actor.log.info("Proxy configured (no URL returned).")
-        except Exception as exc:
-            Actor.log.warning(f"Proxy setup failed ({exc}) — running without proxy")
+        Actor.log.info("Running without proxy — testing direct Apify server IP access to Reddit RSS feeds")
 
         total = 0
 
