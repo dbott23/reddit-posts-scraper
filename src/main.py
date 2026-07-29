@@ -42,14 +42,14 @@ async def main() -> None:
                 oauth_token = await reddit.fetch_oauth_token(
                     reddit_client_id, reddit_client_secret, reddit_username, reddit_password
                 )
-                Actor.log.info("OAuth token obtained — using authenticated JSON API.")
+                Actor.log.info("OAuth token obtained — using authenticated Reddit JSON API.")
             except Exception as exc:
-                Actor.log.warning(f"OAuth failed: {exc} — falling back to unauthenticated RSS feeds.")
+                Actor.log.warning(f"OAuth failed ({exc}) — falling back to Arctic Shift API.")
         else:
-            Actor.log.warning(
-                "No Reddit API credentials provided. "
-                "Unauthenticated requests to reddit.com are blocked from cloud IPs. "
-                "Add redditClientId, redditClientSecret, redditUsername, redditPassword to your input."
+            Actor.log.info(
+                "No Reddit credentials provided — using Arctic Shift public API. "
+                "Subreddit and user scraping work without credentials. "
+                "Global keyword search requires credentials + a subredditFilter."
             )
 
         proxy_url = None
