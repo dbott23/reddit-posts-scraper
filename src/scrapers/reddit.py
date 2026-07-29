@@ -147,24 +147,12 @@ async def scrape_search(
     time_filter: str = "all",
     subreddit: str | None = None,
 ) -> list[dict[str, Any]]:
-    import logging
-    import re
-    log = logging.getLogger(__name__)
-    masked = re.sub(r"://([^:]+):([^@]+)@", "://***:***@", proxy_url or "none")
-    log.info(f"scrape_search proxy: {masked}")
-
     base = f"https://www.reddit.com/r/{subreddit}/search.json" if subreddit else "https://www.reddit.com/search.json"
     params: dict = {"q": query, "sort": sort, "t": time_filter, "type": "link"}
     if subreddit:
         params["restrict_sr"] = "1"
 
     async with _client(proxy_url) as client:
-        # quick connectivity check
-        try:
-            probe = await client.get("https://www.reddit.com/r/python/hot.json", params={"limit": 1})
-            log.info(f"Probe r/python/hot.json → HTTP {probe.status_code}")
-        except Exception as e:
-            log.warning(f"Probe failed: {e}")
         results = await _get_listing(client, base, params, max_results)
 
     return [{**p, "source": "search", "query": query} for p in results]
