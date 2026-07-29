@@ -7,9 +7,23 @@ import datetime
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from camoufox.async_api import AsyncCamoufox
+
+
+def _proxy_cfg(proxy_url: str | None) -> dict | None:
+    """Convert a proxy URL (possibly with embedded credentials) to Playwright proxy dict."""
+    if not proxy_url:
+        return None
+    p = urlparse(proxy_url)
+    cfg: dict = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        cfg["username"] = p.username
+    if p.password:
+        cfg["password"] = p.password
+    return cfg
 
 
 def _ts(val: str | None) -> str | None:
@@ -205,7 +219,7 @@ async def scrape_search(
     base = f"https://www.reddit.com/r/{subreddit}/search/" if subreddit else "https://www.reddit.com/search/"
     url = f"{base}?q={query}&sort={sort}&t={time_filter}&type=link"
 
-    async with AsyncCamoufox(headless=True, proxy={"server": proxy_url} if proxy_url else None) as browser:
+    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
         page = await browser.new_page()
         # Visit homepage first to establish session (required for search to render posts)
         await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30000)
@@ -228,7 +242,7 @@ async def scrape_subreddit(
     if sort in ("top", "controversial") and time_filter != "all":
         url += f"?t={time_filter}"
 
-    async with AsyncCamoufox(headless=True, proxy={"server": proxy_url} if proxy_url else None) as browser:
+    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
         page = await browser.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         try:
@@ -247,19 +261,37 @@ async def scrape_post_comments(
 ) -> list[dict[str, Any]]:
     url = post_url.rstrip("/") + f"?sort={sort}"
 
-    async with AsyncCamoufox(headless=True, proxy={"server": proxy_url} if proxy_url else None) as browser:
+    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
         page = await browser.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         try:
             await page.wait_for_selector("shreddit-comment", timeout=20000)
         except Exception:
             return []
-        results = await _scroll_and_collect(
-            page, "shreddit-comment",
-            lambda el: _parse_comment_element(el, post_url),
-            max_results,
-        )
-    return [{**c, "source": "comment"} for c in results]
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        stall = 0
+        while len(results) < max_results and stall < 4:
+            html = await page.inner_html("body")
+            soup = BeautifulSoup(html, "html.parser")
+            new = 0
+            for el in soup.find_all("shreddit-comment"):
+                if len(results) >= max_results:
+                    break
+                parsed = _parse_comment_element(el, post_url)
+                if not parsed:
+                    continue
+                uid = parsed.get("id") or ""
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                results.append(parsed)
+                new += 1
+            stall = 0 if new else stall + 1
+            if len(results) < max_results:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(2)
+    return [{**c, "source": "comment"} for c in results[:max_results]]
 
 
 async def scrape_user(
@@ -271,7 +303,7 @@ async def scrape_user(
     username = username.lstrip("u/")
     url = f"https://www.reddit.com/user/{username}/submitted/?sort={sort}"
 
-    async with AsyncCamoufox(headless=True, proxy={"server": proxy_url} if proxy_url else None) as browser:
+    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
         page = await browser.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         try:
