@@ -32,9 +32,10 @@ def _safe_int(val: Any) -> int:
         return 0
 
 
-def _client(proxy_url: str | None) -> httpx.AsyncClient:
-    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
-    return httpx.AsyncClient(headers=_HEADERS, timeout=30, proxies=proxies, follow_redirects=True)
+def _client(_proxy_url: str | None = None) -> httpx.AsyncClient:
+    # Reddit's JSON API works directly from Apify's servers.
+    # Datacenter proxy IPs trigger Reddit's network security block, so we skip proxy here.
+    return httpx.AsyncClient(headers=_HEADERS, timeout=30, follow_redirects=True)
 
 
 def _parse_post(data: dict[str, Any]) -> dict[str, Any]:
