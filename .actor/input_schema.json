@@ -3,17 +3,17 @@
     "type": "object",
     "schemaVersion": 1,
     "properties": {
-        "searchQueries": {
-            "title": "Search queries",
-            "type": "array",
-            "description": "Keywords or phrases to search Reddit posts for. Supports Reddit search syntax (e.g. 'subreddit:python flask').",
-            "editor": "stringList",
-            "prefill": ["artificial intelligence"]
-        },
         "subreddits": {
             "title": "Subreddits",
             "type": "array",
             "description": "Subreddits to scrape posts from (e.g. 'python', 'r/MachineLearning'). The 'r/' prefix is optional.",
+            "editor": "stringList",
+            "prefill": ["python"]
+        },
+        "searchQueries": {
+            "title": "Search queries",
+            "type": "array",
+            "description": "Keywords or phrases to search Reddit posts for. Requires a 'Restrict search to subreddit' value, or Reddit API credentials for global search.",
             "editor": "stringList"
         },
         "postUrls": {
