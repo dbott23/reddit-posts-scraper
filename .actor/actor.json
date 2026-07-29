@@ -5,7 +5,7 @@
     "description": "Scrape Reddit posts, comments, and user activity. Search by keyword, scrape subreddits, fetch post comments, or pull user histories.",
     "version": "0.0",
     "buildTag": "latest",
-    "environmentVariables": [],
+    "environmentVariables": {},
     "dockerfile": "./Dockerfile",
     "input": "./input_schema.json",
     "storages": {
