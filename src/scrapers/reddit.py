@@ -1,26 +1,32 @@
-"""Reddit scraper using Reddit's public JSON API — no credentials required."""
+"""Reddit scraper using Reddit's public RSS/Atom feeds — no credentials required."""
 
 from __future__ import annotations
 
 import asyncio
 import datetime
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
+from bs4 import BeautifulSoup
 
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RedditPostsScraper/1.0)",
-    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
-_DELAY = 1.0  # seconds between paginated requests
+
+_ATOM = "http://www.w3.org/2005/Atom"
+_DELAY = 2.0  # seconds between paginated requests
 
 
-def _ts(val: float | None) -> str | None:
+def _ts(val: str | None) -> str | None:
     if not val:
         return None
     try:
-        return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).isoformat()
+        return datetime.datetime.fromisoformat(val.replace("Z", "+00:00")).isoformat()
     except Exception:
         return None
 
@@ -37,106 +43,91 @@ def _client(proxy_url: str | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(headers=_HEADERS, timeout=30, follow_redirects=True, proxies=proxies)
 
 
-def _parse_post(data: dict[str, Any]) -> dict[str, Any]:
-    permalink = data.get("permalink") or ""
-    thumbnail = data.get("thumbnail")
-    if thumbnail in (None, "self", "default", "nsfw", "spoiler", ""):
-        thumbnail = None
-    return {
-        "id": data.get("id"),
-        "url": f"https://www.reddit.com{permalink}" if permalink.startswith("/") else (data.get("url") or ""),
-        "title": data.get("title") or "",
-        "text": data.get("selftext") or None,
-        "author": data.get("author") or None,
-        "subreddit": data.get("subreddit") or None,
-        "score": _safe_int(data.get("score")),
-        "upvoteRatio": data.get("upvote_ratio"),
-        "numComments": _safe_int(data.get("num_comments")),
-        "createdAt": _ts(data.get("created_utc")),
-        "isVideo": bool(data.get("is_video")),
-        "isSelf": bool(data.get("is_self")),
-        "linkUrl": data.get("url") if not data.get("is_self") else None,
-        "thumbnail": thumbnail,
-        "flair": data.get("link_flair_text") or None,
-        "awards": _safe_int(data.get("total_awards_received")),
-    }
-
-
-def _parse_comment(data: dict[str, Any], post_url: str | None) -> dict[str, Any] | None:
-    author = data.get("author") or ""
-    if not author or author in ("[deleted]", "AutoModerator"):
+def _parse_entry(entry: ET.Element, source: str) -> dict[str, Any] | None:
+    """Parse a single Atom feed entry into a post dict."""
+    link_el = entry.find(f"{{{_ATOM}}}link")
+    href = link_el.get("href") if link_el is not None else ""
+    title_el = entry.find(f"{{{_ATOM}}}title")
+    title = (title_el.text or "").strip() if title_el is not None else ""
+    if not title or not href:
         return None
-    body = data.get("body") or ""
-    if body in ("[deleted]", "[removed]", ""):
-        return None
+
+    # Extract post ID from URL
+    m = re.search(r"/comments/([a-zA-Z0-9]+)/", href)
+    post_id = m.group(1) if m else None
+
+    # Author
+    author_el = entry.find(f"{{{_ATOM}}}author/{{{_ATOM}}}name")
+    author = (author_el.text or "").strip() if author_el is not None else None
+    if author == "/u/":
+        author = None
+
+    # Published
+    pub_el = entry.find(f"{{{_ATOM}}}published")
+    created_at = _ts(pub_el.text.strip() if pub_el is not None else None)
+
+    # Subreddit from URL
+    sr_m = re.search(r"/r/([^/]+)/", href)
+    subreddit = sr_m.group(1) if sr_m else None
+
+    # Content is HTML — parse for score and comment count
+    content_el = entry.find(f"{{{_ATOM}}}content")
+    content_html = content_el.text or "" if content_el is not None else ""
+    soup = BeautifulSoup(content_html, "html.parser")
+
+    score = 0
+    num_comments = 0
+    text = None
+    thumbnail = None
+
+    # Score and comments are in anchor tags at the bottom of content
+    for a in soup.find_all("a"):
+        t = a.get_text(strip=True)
+        m2 = re.match(r"^(\d+)\s+point", t)
+        if m2:
+            score = _safe_int(m2.group(1))
+        m3 = re.match(r"^(\d+)\s+comment", t)
+        if m3:
+            num_comments = _safe_int(m3.group(1))
+
+    # Selftext from <p> tags (if self post)
+    paragraphs = soup.find_all("p")
+    if paragraphs:
+        text_parts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+        if text_parts:
+            text = " ".join(text_parts[:3])  # first few paragraphs
+
+    # Thumbnail from img tag
+    img = soup.find("img")
+    if img and img.get("src"):
+        thumbnail = img.get("src")
+
     return {
-        "id": data.get("id"),
-        "url": post_url,
-        "text": body,
+        "id": post_id,
+        "url": href,
+        "title": title,
+        "text": text or None,
         "author": author,
-        "subreddit": data.get("subreddit") or None,
-        "score": _safe_int(data.get("score")),
-        "createdAt": _ts(data.get("created_utc")),
-        "isTopLevel": _safe_int(data.get("depth")) == 0,
-        "postId": (data.get("link_id") or "").replace("t3_", "") or None,
+        "subreddit": subreddit,
+        "score": score,
+        "upvoteRatio": None,
+        "numComments": num_comments,
+        "createdAt": created_at,
+        "isVideo": False,
+        "isSelf": None,
+        "linkUrl": None,
+        "thumbnail": thumbnail,
+        "flair": None,
+        "awards": 0,
+        "source": source,
     }
 
 
-def _flatten_comments(
-    listing: dict, post_url: str | None, results: list, seen: set, max_results: int
-) -> None:
-    children = (listing.get("data") or {}).get("children") or []
-    for child in children:
-        if len(results) >= max_results:
-            break
-        kind = child.get("kind")
-        data = child.get("data") or {}
-        if kind == "t1":
-            parsed = _parse_comment(data, post_url)
-            if parsed:
-                uid = parsed.get("id") or ""
-                if uid not in seen:
-                    seen.add(uid)
-                    results.append(parsed)
-            replies = data.get("replies")
-            if replies and isinstance(replies, dict) and len(results) < max_results:
-                _flatten_comments(replies, post_url, results, seen, max_results)
-
-
-async def _get_listing(
-    client: httpx.AsyncClient, url: str, params: dict, max_results: int
-) -> list[dict[str, Any]]:
-    """Paginate a Reddit listing endpoint, yielding parsed post dicts."""
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    after: str | None = None
-
-    while len(results) < max_results:
-        p = {**params, "limit": min(100, max_results - len(results))}
-        if after:
-            p["after"] = after
-        resp = await client.get(url, params=p)
-        resp.raise_for_status()
-        body = resp.json()
-        listing_data = body.get("data") or {}
-        children = listing_data.get("children") or []
-        after = listing_data.get("after")
-        if not children:
-            break
-        for child in children:
-            if len(results) >= max_results:
-                break
-            if child.get("kind") == "t3":
-                parsed = _parse_post(child.get("data") or {})
-                uid = parsed.get("id") or parsed.get("url") or ""
-                if uid not in seen:
-                    seen.add(uid)
-                    results.append(parsed)
-        if not after:
-            break
-        await asyncio.sleep(_DELAY)
-
-    return results[:max_results]
+async def _fetch_feed(client: httpx.AsyncClient, url: str) -> list[ET.Element]:
+    resp = await client.get(url)
+    resp.raise_for_status()
+    root = ET.fromstring(resp.text)
+    return root.findall(f"{{{_ATOM}}}entry")
 
 
 async def scrape_search(
@@ -147,15 +138,32 @@ async def scrape_search(
     time_filter: str = "all",
     subreddit: str | None = None,
 ) -> list[dict[str, Any]]:
-    base = f"https://www.reddit.com/r/{subreddit}/search.json" if subreddit else "https://www.reddit.com/search.json"
-    params: dict = {"q": query, "sort": sort, "t": time_filter, "type": "link"}
+    # Reddit search RSS — accessible without credentials
+    q = quote_plus(query)
     if subreddit:
-        params["restrict_sr"] = "1"
+        base = f"https://www.reddit.com/r/{subreddit}/search.rss?q={q}&sort={sort}&t={time_filter}&restrict_sr=1"
+    else:
+        base = f"https://www.reddit.com/search.rss?q={q}&sort={sort}&t={time_filter}&type=link"
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
     async with _client(proxy_url) as client:
-        results = await _get_listing(client, base, params, max_results)
+        # RSS feeds don't paginate — fetch up to 100 per request
+        url = f"{base}&limit={min(100, max_results)}"
+        entries = await _fetch_feed(client, url)
+        for entry in entries:
+            if len(results) >= max_results:
+                break
+            parsed = _parse_entry(entry, "search")
+            if not parsed:
+                continue
+            uid = parsed.get("id") or parsed.get("url") or ""
+            if uid not in seen:
+                seen.add(uid)
+                results.append({**parsed, "query": query})
 
-    return [{**p, "source": "search", "query": query} for p in results]
+    return results[:max_results]
 
 
 async def scrape_subreddit(
@@ -166,15 +174,26 @@ async def scrape_subreddit(
     time_filter: str = "all",
 ) -> list[dict[str, Any]]:
     subreddit = subreddit.lstrip("r/")
-    url = f"https://www.reddit.com/r/{subreddit}/{sort}.json"
-    params: dict = {}
-    if sort in ("top", "controversial") and time_filter != "all":
-        params["t"] = time_filter
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
     async with _client(proxy_url) as client:
-        results = await _get_listing(client, url, params, max_results)
+        url = f"https://www.reddit.com/r/{subreddit}/{sort}.rss?limit={min(100, max_results)}"
+        if sort in ("top", "controversial") and time_filter != "all":
+            url += f"&t={time_filter}"
+        entries = await _fetch_feed(client, url)
+        for entry in entries:
+            if len(results) >= max_results:
+                break
+            parsed = _parse_entry(entry, "subreddit")
+            if not parsed:
+                continue
+            uid = parsed.get("id") or parsed.get("url") or ""
+            if uid not in seen:
+                seen.add(uid)
+                results.append(parsed)
 
-    return [{**p, "source": "subreddit"} for p in results]
+    return results[:max_results]
 
 
 async def scrape_post_comments(
@@ -183,24 +202,56 @@ async def scrape_post_comments(
     max_results: int,
     sort: str = "top",
 ) -> list[dict[str, Any]]:
-    m = re.search(r"/comments/([a-zA-Z0-9]+)", post_url)
+    # Comments RSS: https://www.reddit.com/r/{sub}/comments/{id}/.rss
+    m = re.search(r"(/r/[^/]+/comments/[a-zA-Z0-9]+)", post_url)
     if not m:
         return []
-    post_id = m.group(1)
-    url = f"https://www.reddit.com/comments/{post_id}.json"
-
-    async with _client(proxy_url) as client:
-        resp = await client.get(url, params={"sort": sort, "limit": min(500, max_results * 3)})
-        resp.raise_for_status()
-        data = resp.json()
-
-    if not isinstance(data, list) or len(data) < 2:
-        return []
+    path = m.group(1)
+    url = f"https://www.reddit.com{path}/.rss?limit={min(100, max_results)}"
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-    _flatten_comments(data[1], post_url, results, seen, max_results)
-    return [{**c, "source": "comment"} for c in results[:max_results]]
+
+    async with _client(proxy_url) as client:
+        entries = await _fetch_feed(client, url)
+        # Skip the first entry which is the post itself
+        for entry in entries[1:]:
+            if len(results) >= max_results:
+                break
+            link_el = entry.find(f"{{{_ATOM}}}link")
+            href = link_el.get("href") if link_el is not None else ""
+            author_el = entry.find(f"{{{_ATOM}}}author/{{{_ATOM}}}name")
+            author = (author_el.text or "").strip() if author_el is not None else None
+            if not author or author in ("[deleted]", "/u/"):
+                continue
+            pub_el = entry.find(f"{{{_ATOM}}}published")
+            content_el = entry.find(f"{{{_ATOM}}}content")
+            content_html = content_el.text or "" if content_el is not None else ""
+            soup = BeautifulSoup(content_html, "html.parser")
+            body = soup.get_text(separator=" ").strip()
+            if not body or body in ("[deleted]", "[removed]"):
+                continue
+            cid = re.search(r"comment/([a-zA-Z0-9]+)", href)
+            uid = cid.group(1) if cid else href
+            if uid in seen:
+                continue
+            seen.add(uid)
+            sr_m = re.search(r"/r/([^/]+)/", post_url)
+            results.append({
+                "id": uid,
+                "url": href or post_url,
+                "text": body,
+                "author": author,
+                "subreddit": sr_m.group(1) if sr_m else None,
+                "score": 0,  # RSS doesn't expose comment scores
+                "createdAt": _ts(pub_el.text.strip() if pub_el is not None else None),
+                "isTopLevel": None,
+                "postId": re.search(r"/comments/([a-zA-Z0-9]+)/", post_url or "").group(1)
+                    if re.search(r"/comments/([a-zA-Z0-9]+)/", post_url or "") else None,
+                "source": "comment",
+            })
+
+    return results[:max_results]
 
 
 async def scrape_user(
@@ -210,10 +261,22 @@ async def scrape_user(
     sort: str = "new",
 ) -> list[dict[str, Any]]:
     username = username.lstrip("u/")
-    url = f"https://www.reddit.com/user/{username}/submitted.json"
-    params: dict = {"sort": sort}
+    url = f"https://www.reddit.com/user/{username}/submitted.rss?limit={min(100, max_results)}&sort={sort}"
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
     async with _client(proxy_url) as client:
-        results = await _get_listing(client, url, params, max_results)
+        entries = await _fetch_feed(client, url)
+        for entry in entries:
+            if len(results) >= max_results:
+                break
+            parsed = _parse_entry(entry, "user")
+            if not parsed:
+                continue
+            uid = parsed.get("id") or parsed.get("url") or ""
+            if uid not in seen:
+                seen.add(uid)
+                results.append(parsed)
 
-    return [{**p, "source": "user"} for p in results]
+    return results[:max_results]
