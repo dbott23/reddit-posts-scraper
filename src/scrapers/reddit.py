@@ -1,36 +1,26 @@
-"""Reddit scraper using Playwright (camoufox) — no credentials required."""
+"""Reddit scraper using Reddit's public JSON API — no credentials required."""
 
 from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import re
 from typing import Any
-from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
-from camoufox.async_api import AsyncCamoufox
+import httpx
 
-
-def _proxy_cfg(proxy_url: str | None) -> dict | None:
-    """Convert a proxy URL (possibly with embedded credentials) to Playwright proxy dict."""
-    if not proxy_url:
-        return None
-    p = urlparse(proxy_url)
-    cfg: dict = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
-    if p.username:
-        cfg["username"] = p.username
-    if p.password:
-        cfg["password"] = p.password
-    return cfg
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; RedditPostsScraper/1.0)",
+    "Accept": "application/json",
+}
+_DELAY = 1.0  # seconds between paginated requests
 
 
-def _ts(val: str | None) -> str | None:
+def _ts(val: float | None) -> str | None:
     if not val:
         return None
     try:
-        return datetime.datetime.fromisoformat(val.replace("Z", "+00:00")).isoformat()
+        return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).isoformat()
     except Exception:
         return None
 
@@ -42,168 +32,109 @@ def _safe_int(val: Any) -> int:
         return 0
 
 
-def _parse_post_element(el: Any) -> dict[str, Any] | None:
-    """Parse a <shreddit-post> custom element (subreddit/user pages)."""
-    permalink = el.get("permalink") or ""
-    title = el.get("post-title") or el.get("title") or ""
-    if not title or not permalink:
-        return None
+def _client(proxy_url: str | None) -> httpx.AsyncClient:
+    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
+    return httpx.AsyncClient(headers=_HEADERS, timeout=30, proxies=proxies, follow_redirects=True)
+
+
+def _parse_post(data: dict[str, Any]) -> dict[str, Any]:
+    permalink = data.get("permalink") or ""
+    thumbnail = data.get("thumbnail")
+    if thumbnail in (None, "self", "default", "nsfw", "spoiler", ""):
+        thumbnail = None
     return {
-        "id": el.get("id") or el.get("post-id") or None,
-        "url": f"https://www.reddit.com{permalink}" if permalink.startswith("/") else permalink,
-        "title": title,
-        "text": None,
-        "author": el.get("author") or None,
-        "subreddit": (el.get("subreddit-prefixed-name") or "").lstrip("r/") or el.get("subreddit") or None,
-        "score": _safe_int(el.get("score")),
-        "upvoteRatio": None,
-        "numComments": _safe_int(el.get("comment-count")),
-        "createdAt": _ts(el.get("created-timestamp")),
-        "isVideo": el.get("content-href", "").endswith((".mp4", ".webm")) if el.get("content-href") else False,
-        "isSelf": el.get("post-type") == "self",
-        "linkUrl": el.get("content-href") or None,
-        "thumbnail": el.get("thumbnail-url") or None,
-        "flair": el.get("flair-text") or None,
-        "awards": 0,
+        "id": data.get("id"),
+        "url": f"https://www.reddit.com{permalink}" if permalink.startswith("/") else (data.get("url") or ""),
+        "title": data.get("title") or "",
+        "text": data.get("selftext") or None,
+        "author": data.get("author") or None,
+        "subreddit": data.get("subreddit") or None,
+        "score": _safe_int(data.get("score")),
+        "upvoteRatio": data.get("upvote_ratio"),
+        "numComments": _safe_int(data.get("num_comments")),
+        "createdAt": _ts(data.get("created_utc")),
+        "isVideo": bool(data.get("is_video")),
+        "isSelf": bool(data.get("is_self")),
+        "linkUrl": data.get("url") if not data.get("is_self") else None,
+        "thumbnail": thumbnail,
+        "flair": data.get("link_flair_text") or None,
+        "awards": _safe_int(data.get("total_awards_received")),
     }
 
 
-def _parse_search_card(card: Any) -> dict[str, Any] | None:
-    """Parse a search result card div (data-testid='search-post-with-content-preview')."""
-    link = card.find("a", attrs={"data-testid": "post-title"})
-    if not link:
+def _parse_comment(data: dict[str, Any], post_url: str | None) -> dict[str, Any] | None:
+    author = data.get("author") or ""
+    if not author or author in ("[deleted]", "AutoModerator"):
         return None
-    href = link.get("href") or ""
-    title = link.get("aria-label") or link.get_text(strip=True)
-    if not title or not href:
+    body = data.get("body") or ""
+    if body in ("[deleted]", "[removed]", ""):
         return None
-
-    # Extract metadata from JSON tracking context
-    tracker = card.find("search-telemetry-tracker", attrs={"click-events": "search/click/post"})
-    meta: dict[str, Any] = {}
-    if tracker:
-        ctx_raw = tracker.get("data-faceplate-tracking-context") or ""
-        try:
-            ctx = json.loads(ctx_raw.replace("&quot;", '"'))
-            meta = ctx
-        except Exception:
-            pass
-
-    post_id = (meta.get("post") or {}).get("id", "").replace("t3_", "") or None
-    author = (meta.get("profile") or {}).get("name") or None
-    subreddit = (meta.get("subreddit") or {}).get("name") or None
-    snippet = (meta.get("search") or {}).get("snippet") or None
-
-    # Score and comment count from faceplate-number elements
-    nums = card.find_all("faceplate-number")
-    score = _safe_int(nums[0].get("number")) if len(nums) > 0 else 0
-    num_comments = _safe_int(nums[1].get("number")) if len(nums) > 1 else 0
-
-    # Timestamp from faceplate-timeago
-    timeago = card.find("faceplate-timeago")
-    created_at = _ts(timeago.get("ts")) if timeago else None
-
     return {
-        "id": post_id,
-        "url": f"https://www.reddit.com{href}" if href.startswith("/") else href,
-        "title": title,
-        "text": snippet,
-        "author": author,
-        "subreddit": subreddit,
-        "score": score,
-        "upvoteRatio": None,
-        "numComments": num_comments,
-        "createdAt": created_at,
-        "isVideo": False,
-        "isSelf": None,
-        "linkUrl": None,
-        "thumbnail": None,
-        "flair": None,
-        "awards": 0,
-    }
-
-
-def _parse_comment_element(el: Any, post_url: str | None) -> dict[str, Any] | None:
-    """Parse a <shreddit-comment> element."""
-    author = el.get("author") or ""
-    body = el.get("body-html") or ""
-    if not author or author == "[deleted]":
-        return None
-    body_text = BeautifulSoup(body, "html.parser").get_text(separator=" ").strip() if body else None
-    depth = _safe_int(el.get("depth")) or 0
-    return {
-        "id": el.get("thingid") or el.get("id") or None,
+        "id": data.get("id"),
         "url": post_url,
-        "text": body_text,
+        "text": body,
         "author": author,
-        "subreddit": el.get("subreddit") or None,
-        "score": _safe_int(el.get("score")),
-        "createdAt": _ts(el.get("created-timestamp")),
-        "isTopLevel": depth == 0,
-        "postId": None,
+        "subreddit": data.get("subreddit") or None,
+        "score": _safe_int(data.get("score")),
+        "createdAt": _ts(data.get("created_utc")),
+        "isTopLevel": _safe_int(data.get("depth")) == 0,
+        "postId": (data.get("link_id") or "").replace("t3_", "") or None,
     }
 
 
-async def _scroll_and_collect_shreddit(
-    page: Any, max_results: int
+def _flatten_comments(
+    listing: dict, post_url: str | None, results: list, seen: set, max_results: int
+) -> None:
+    children = (listing.get("data") or {}).get("children") or []
+    for child in children:
+        if len(results) >= max_results:
+            break
+        kind = child.get("kind")
+        data = child.get("data") or {}
+        if kind == "t1":
+            parsed = _parse_comment(data, post_url)
+            if parsed:
+                uid = parsed.get("id") or ""
+                if uid not in seen:
+                    seen.add(uid)
+                    results.append(parsed)
+            replies = data.get("replies")
+            if replies and isinstance(replies, dict) and len(results) < max_results:
+                _flatten_comments(replies, post_url, results, seen, max_results)
+
+
+async def _get_listing(
+    client: httpx.AsyncClient, url: str, params: dict, max_results: int
 ) -> list[dict[str, Any]]:
-    """Collect shreddit-post elements (subreddit/user pages) by scrolling."""
+    """Paginate a Reddit listing endpoint, yielding parsed post dicts."""
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-    stall = 0
+    after: str | None = None
 
-    while len(results) < max_results and stall < 4:
-        html = await page.inner_html("body")
-        soup = BeautifulSoup(html, "html.parser")
-        new = 0
-        for el in soup.find_all("shreddit-post"):
+    while len(results) < max_results:
+        p = {**params, "limit": min(100, max_results - len(results))}
+        if after:
+            p["after"] = after
+        resp = await client.get(url, params=p)
+        resp.raise_for_status()
+        body = resp.json()
+        listing_data = body.get("data") or {}
+        children = listing_data.get("children") or []
+        after = listing_data.get("after")
+        if not children:
+            break
+        for child in children:
             if len(results) >= max_results:
                 break
-            parsed = _parse_post_element(el)
-            if not parsed:
-                continue
-            uid = parsed.get("id") or parsed.get("url") or ""
-            if uid in seen:
-                continue
-            seen.add(uid)
-            results.append(parsed)
-            new += 1
-        stall = 0 if new else stall + 1
-        if len(results) < max_results:
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
-
-    return results[:max_results]
-
-
-async def _scroll_and_collect_search(
-    page: Any, max_results: int
-) -> list[dict[str, Any]]:
-    """Collect search result cards by scrolling (DOM approach)."""
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    stall = 0
-
-    while len(results) < max_results and stall < 5:
-        html = await page.inner_html("body")
-        soup = BeautifulSoup(html, "html.parser")
-        new = 0
-        for card in soup.find_all("div", attrs={"data-testid": "search-post-with-content-preview"}):
-            if len(results) >= max_results:
-                break
-            parsed = _parse_search_card(card)
-            if not parsed:
-                continue
-            uid = parsed.get("id") or parsed.get("url") or ""
-            if uid in seen:
-                continue
-            seen.add(uid)
-            results.append(parsed)
-            new += 1
-        stall = 0 if new else stall + 1
-        if len(results) < max_results:
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
+            if child.get("kind") == "t3":
+                parsed = _parse_post(child.get("data") or {})
+                uid = parsed.get("id") or parsed.get("url") or ""
+                if uid not in seen:
+                    seen.add(uid)
+                    results.append(parsed)
+        if not after:
+            break
+        await asyncio.sleep(_DELAY)
 
     return results[:max_results]
 
@@ -216,32 +147,13 @@ async def scrape_search(
     time_filter: str = "all",
     subreddit: str | None = None,
 ) -> list[dict[str, Any]]:
-    base = f"https://www.reddit.com/r/{subreddit}/search/" if subreddit else "https://www.reddit.com/search/"
-    url = f"{base}?q={query}&sort={sort}&t={time_filter}&type=link"
+    base = f"https://www.reddit.com/r/{subreddit}/search.json" if subreddit else "https://www.reddit.com/search.json"
+    params: dict = {"q": query, "sort": sort, "t": time_filter, "type": "link"}
+    if subreddit:
+        params["restrict_sr"] = "1"
 
-    import logging
-    log = logging.getLogger(__name__)
-
-    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
-        page = await browser.new_page()
-        # Visit homepage first to establish session (required for search to render posts)
-        await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30000)
-        home_title = await page.title()
-        log.info(f"Homepage title: {home_title!r}")
-        await asyncio.sleep(2)
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        search_title = await page.title()
-        log.info(f"Search page title: {search_title!r}")
-        # Count key elements to diagnose what loaded
-        card_count = await page.evaluate(
-            "document.querySelectorAll('[data-testid=\"search-post-with-content-preview\"]').length"
-        )
-        shreddit_count = await page.evaluate("document.querySelectorAll('shreddit-post').length")
-        log.info(f"Search cards: {card_count}, shreddit-posts: {shreddit_count}")
-        if card_count == 0 and shreddit_count == 0:
-            body_snippet = (await page.inner_text("body"))[:300].replace("\n", " ")
-            log.warning(f"Page body snippet: {body_snippet!r}")
-        results = await _scroll_and_collect_search(page, max_results)
+    async with _client(proxy_url) as client:
+        results = await _get_listing(client, base, params, max_results)
 
     return [{**p, "source": "search", "query": query} for p in results]
 
@@ -254,18 +166,14 @@ async def scrape_subreddit(
     time_filter: str = "all",
 ) -> list[dict[str, Any]]:
     subreddit = subreddit.lstrip("r/")
-    url = f"https://www.reddit.com/r/{subreddit}/{sort}/"
+    url = f"https://www.reddit.com/r/{subreddit}/{sort}.json"
+    params: dict = {}
     if sort in ("top", "controversial") and time_filter != "all":
-        url += f"?t={time_filter}"
+        params["t"] = time_filter
 
-    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
-        page = await browser.new_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_selector("shreddit-post", timeout=15000)
-        except Exception:
-            return []
-        results = await _scroll_and_collect_shreddit(page, max_results)
+    async with _client(proxy_url) as client:
+        results = await _get_listing(client, url, params, max_results)
+
     return [{**p, "source": "subreddit"} for p in results]
 
 
@@ -275,38 +183,23 @@ async def scrape_post_comments(
     max_results: int,
     sort: str = "top",
 ) -> list[dict[str, Any]]:
-    url = post_url.rstrip("/") + f"?sort={sort}"
+    m = re.search(r"/comments/([a-zA-Z0-9]+)", post_url)
+    if not m:
+        return []
+    post_id = m.group(1)
+    url = f"https://www.reddit.com/comments/{post_id}.json"
 
-    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
-        page = await browser.new_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_selector("shreddit-comment", timeout=20000)
-        except Exception:
-            return []
-        results: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        stall = 0
-        while len(results) < max_results and stall < 4:
-            html = await page.inner_html("body")
-            soup = BeautifulSoup(html, "html.parser")
-            new = 0
-            for el in soup.find_all("shreddit-comment"):
-                if len(results) >= max_results:
-                    break
-                parsed = _parse_comment_element(el, post_url)
-                if not parsed:
-                    continue
-                uid = parsed.get("id") or ""
-                if uid in seen:
-                    continue
-                seen.add(uid)
-                results.append(parsed)
-                new += 1
-            stall = 0 if new else stall + 1
-            if len(results) < max_results:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(2)
+    async with _client(proxy_url) as client:
+        resp = await client.get(url, params={"sort": sort, "limit": min(500, max_results * 3)})
+        resp.raise_for_status()
+        data = resp.json()
+
+    if not isinstance(data, list) or len(data) < 2:
+        return []
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    _flatten_comments(data[1], post_url, results, seen, max_results)
     return [{**c, "source": "comment"} for c in results[:max_results]]
 
 
@@ -317,14 +210,10 @@ async def scrape_user(
     sort: str = "new",
 ) -> list[dict[str, Any]]:
     username = username.lstrip("u/")
-    url = f"https://www.reddit.com/user/{username}/submitted/?sort={sort}"
+    url = f"https://www.reddit.com/user/{username}/submitted.json"
+    params: dict = {"sort": sort}
 
-    async with AsyncCamoufox(headless=True, proxy=_proxy_cfg(proxy_url)) as browser:
-        page = await browser.new_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_selector("shreddit-post", timeout=15000)
-        except Exception:
-            return []
-        results = await _scroll_and_collect_shreddit(page, max_results)
+    async with _client(proxy_url) as client:
+        results = await _get_listing(client, url, params, max_results)
+
     return [{**p, "source": "user"} for p in results]
