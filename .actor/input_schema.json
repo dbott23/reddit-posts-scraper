@@ -1,0 +1,78 @@
+{
+    "title": "Reddit Posts Scraper input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "searchQueries": {
+            "title": "Search queries",
+            "type": "array",
+            "description": "Keywords or phrases to search Reddit posts for. Supports Reddit search syntax (e.g. 'subreddit:python flask').",
+            "editor": "stringList",
+            "prefill": ["artificial intelligence"]
+        },
+        "subreddits": {
+            "title": "Subreddits",
+            "type": "array",
+            "description": "Subreddits to scrape posts from (e.g. 'python', 'r/MachineLearning'). The 'r/' prefix is optional.",
+            "editor": "stringList"
+        },
+        "postUrls": {
+            "title": "Post URLs (for comments)",
+            "type": "array",
+            "description": "Direct links to Reddit posts. The scraper will fetch the comments for each post.",
+            "editor": "stringList"
+        },
+        "usernames": {
+            "title": "Reddit usernames",
+            "type": "array",
+            "description": "Reddit usernames to scrape recent posts from (e.g. 'spez' or 'u/spez').",
+            "editor": "stringList"
+        },
+        "maxPostsPerSource": {
+            "title": "Max posts per query/subreddit/user",
+            "type": "integer",
+            "description": "Maximum number of posts to fetch for each search query, subreddit, or username.",
+            "default": 25,
+            "minimum": 1,
+            "maximum": 500
+        },
+        "maxCommentsPerPost": {
+            "title": "Max comments per post (0 = no comments)",
+            "type": "integer",
+            "description": "If greater than 0, fetch this many comments for each post. Set to 0 to skip comments.",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 500
+        },
+        "sort": {
+            "title": "Subreddit sort",
+            "type": "string",
+            "description": "How to sort posts when scraping subreddits.",
+            "enum": ["hot", "new", "top", "rising"],
+            "enumTitles": ["Hot", "New", "Top", "Rising"],
+            "default": "hot"
+        },
+        "searchSort": {
+            "title": "Search sort",
+            "type": "string",
+            "description": "How to sort keyword search results.",
+            "enum": ["relevance", "hot", "top", "new", "comments"],
+            "enumTitles": ["Relevance", "Hot", "Top", "New", "Most comments"],
+            "default": "relevance"
+        },
+        "timeFilter": {
+            "title": "Time filter",
+            "type": "string",
+            "description": "Time range for top/search results.",
+            "enum": ["hour", "day", "week", "month", "year", "all"],
+            "enumTitles": ["Past hour", "Past 24 hours", "Past week", "Past month", "Past year", "All time"],
+            "default": "all"
+        },
+        "subredditFilter": {
+            "title": "Restrict search to subreddit",
+            "type": "string",
+            "description": "Optional. Limit keyword search results to a specific subreddit (e.g. 'MachineLearning').",
+            "editor": "textfield"
+        }
+    }
+}

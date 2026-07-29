@@ -1,0 +1,37 @@
+{
+    "actorSpecification": 1,
+    "name": "reddit-posts-scraper",
+    "title": "Reddit Posts Scraper",
+    "description": "Scrape Reddit posts, comments, and user activity. Search by keyword, scrape subreddits, fetch post comments, or pull user histories.",
+    "version": "0.0",
+    "buildTag": "latest",
+    "environmentVariables": [],
+    "dockerfile": "./Dockerfile",
+    "input": "./input_schema.json",
+    "storages": {
+        "dataset": {
+            "actorSpecification": 1,
+            "fields": {},
+            "views": {
+                "overview": {
+                    "title": "Reddit posts and comments",
+                    "transformation": {
+                        "fields": ["title", "author", "subreddit", "score", "numComments", "createdAt", "url"]
+                    },
+                    "display": {
+                        "component": "table",
+                        "properties": {
+                            "title": {"label": "Title", "format": "text"},
+                            "author": {"label": "Author", "format": "text"},
+                            "subreddit": {"label": "Subreddit", "format": "text"},
+                            "score": {"label": "Score", "format": "number"},
+                            "numComments": {"label": "Comments", "format": "number"},
+                            "createdAt": {"label": "Posted", "format": "date"},
+                            "url": {"label": "Link", "format": "link"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
