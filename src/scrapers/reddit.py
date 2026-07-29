@@ -297,13 +297,12 @@ async def scrape_subreddit(
                         seen.add(uid)
                         results.append(parsed)
     else:
-        # Arctic Shift: sort by score descending (closest to "hot/top")
+        # Arctic Shift: sort=desc returns newest posts (no hot/score sort available)
         async with _arctic_client() as client:
             params = {
                 "subreddit": subreddit,
                 "limit": min(100, max_results),
-                "sort": "score",
-                "order": "desc",
+                "sort": "desc",
             }
             resp = await client.get("/posts/search", params=params)
             resp.raise_for_status()
@@ -408,7 +407,7 @@ async def scrape_user(
         async with _arctic_client() as client:
             resp = await client.get(
                 "/posts/search",
-                params={"author": username, "limit": min(100, max_results), "sort": "created_utc", "order": "desc"},
+                params={"author": username, "limit": min(100, max_results), "sort": "desc"},
             )
             resp.raise_for_status()
             for p in resp.json().get("data", []) or []:
