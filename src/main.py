@@ -32,7 +32,8 @@ async def main() -> None:
         proxy_config = None
         proxy_url = None
         try:
-            proxy_config = await Actor.create_proxy_configuration()
+            # Residential proxies are required — Reddit blocks datacenter IPs.
+            proxy_config = await Actor.create_proxy_configuration(groups=["RESIDENTIAL"])
             proxy_url = await proxy_config.new_url() if proxy_config else None
             Actor.log.info("Proxy configured.")
         except Exception as exc:
