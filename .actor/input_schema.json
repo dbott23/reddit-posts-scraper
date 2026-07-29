@@ -77,10 +77,8 @@
         "redditClientId": {
             "title": "Reddit app client ID",
             "type": "string",
-            "description": "Client ID of your Reddit script app (https://www.reddit.com/prefs/apps). Required to run on Apify — Reddit blocks unauthenticated requests from cloud IPs.",
-            "editor": "textfield",
-            "groupCaption": "Reddit API credentials (required on Apify)",
-            "groupDescription": "Create a free Reddit 'script' app at reddit.com/prefs/apps. Use your own Reddit account credentials."
+            "description": "Client ID of your Reddit script app (https://www.reddit.com/prefs/apps). Required to run on Apify — Reddit blocks unauthenticated requests from cloud IPs. Create a free 'script' app at reddit.com/prefs/apps.",
+            "editor": "textfield"
         },
         "redditClientSecret": {
             "title": "Reddit app client secret",
