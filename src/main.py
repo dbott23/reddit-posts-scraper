@@ -23,14 +23,36 @@ async def main() -> None:
         time_filter: str = inp.get("timeFilter") or "all"
         subreddit_filter: str | None = inp.get("subredditFilter") or None
 
+        reddit_client_id: str = (inp.get("redditClientId") or "").strip()
+        reddit_client_secret: str = (inp.get("redditClientSecret") or "").strip()
+        reddit_username: str = (inp.get("redditUsername") or "").strip()
+        reddit_password: str = (inp.get("redditPassword") or "").strip()
+
         if not any([search_queries, subreddits, post_urls, usernames]):
             await Actor.fail(
                 status_message="Provide at least one of: searchQueries, subreddits, postUrls, or usernames."
             )
             return
 
+        # Attempt OAuth if credentials are provided
+        oauth_token: str | None = None
+        if reddit_client_id and reddit_client_secret and reddit_username and reddit_password:
+            try:
+                Actor.log.info(f"Fetching Reddit OAuth token for u/{reddit_username}...")
+                oauth_token = await reddit.fetch_oauth_token(
+                    reddit_client_id, reddit_client_secret, reddit_username, reddit_password
+                )
+                Actor.log.info("OAuth token obtained — using authenticated JSON API.")
+            except Exception as exc:
+                Actor.log.warning(f"OAuth failed: {exc} — falling back to unauthenticated RSS feeds.")
+        else:
+            Actor.log.warning(
+                "No Reddit API credentials provided. "
+                "Unauthenticated requests to reddit.com are blocked from cloud IPs. "
+                "Add redditClientId, redditClientSecret, redditUsername, redditPassword to your input."
+            )
+
         proxy_url = None
-        Actor.log.info("Running without proxy — testing direct Apify server IP access to Reddit RSS feeds")
 
         total = 0
 
@@ -41,6 +63,8 @@ async def main() -> None:
                     proxy_url, query, max_posts,
                     sort=search_sort, time_filter=time_filter,
                     subreddit=subreddit_filter,
+                    oauth_token=oauth_token,
+                    oauth_username=reddit_username,
                 )
             except Exception as exc:
                 Actor.log.warning(f"Search failed for {query!r}: {exc}")
@@ -55,7 +79,10 @@ async def main() -> None:
                     url = post.get("url")
                     if url:
                         try:
-                            comments = await reddit.scrape_post_comments(proxy_url, url, max_comments)
+                            comments = await reddit.scrape_post_comments(
+                                proxy_url, url, max_comments,
+                                oauth_token=oauth_token, oauth_username=reddit_username,
+                            )
                             if comments:
                                 await Actor.push_data([{**c, "query": query} for c in comments])
                                 total += len(comments)
@@ -66,7 +93,10 @@ async def main() -> None:
             sub = sub.lstrip("r/")
             Actor.log.info(f"Scraping r/{sub} (sort={sort}, time={time_filter})")
             try:
-                posts = await reddit.scrape_subreddit(proxy_url, sub, max_posts, sort=sort, time_filter=time_filter)
+                posts = await reddit.scrape_subreddit(
+                    proxy_url, sub, max_posts, sort=sort, time_filter=time_filter,
+                    oauth_token=oauth_token, oauth_username=reddit_username,
+                )
             except Exception as exc:
                 Actor.log.warning(f"Subreddit failed for r/{sub}: {exc}")
                 continue
@@ -80,7 +110,10 @@ async def main() -> None:
                     url = post.get("url")
                     if url:
                         try:
-                            comments = await reddit.scrape_post_comments(proxy_url, url, max_comments)
+                            comments = await reddit.scrape_post_comments(
+                                proxy_url, url, max_comments,
+                                oauth_token=oauth_token, oauth_username=reddit_username,
+                            )
                             if comments:
                                 await Actor.push_data(comments)
                                 total += len(comments)
@@ -93,7 +126,10 @@ async def main() -> None:
                 Actor.log.warning(f"Could not parse post URL: {url}")
                 continue
             try:
-                comments = await reddit.scrape_post_comments(proxy_url, url, max_comments or 100)
+                comments = await reddit.scrape_post_comments(
+                    proxy_url, url, max_comments or 100,
+                    oauth_token=oauth_token, oauth_username=reddit_username,
+                )
             except Exception as exc:
                 Actor.log.warning(f"Comments failed for {url}: {exc}")
                 continue
@@ -106,7 +142,10 @@ async def main() -> None:
             username = username.lstrip("u/")
             Actor.log.info(f"Scraping u/{username}")
             try:
-                posts = await reddit.scrape_user(proxy_url, username, max_posts)
+                posts = await reddit.scrape_user(
+                    proxy_url, username, max_posts,
+                    oauth_token=oauth_token, oauth_username=reddit_username,
+                )
             except Exception as exc:
                 Actor.log.warning(f"User posts failed for u/{username}: {exc}")
                 continue

@@ -73,6 +73,34 @@
             "type": "string",
             "description": "Optional. Limit keyword search results to a specific subreddit (e.g. 'MachineLearning').",
             "editor": "textfield"
+        },
+        "redditClientId": {
+            "title": "Reddit app client ID",
+            "type": "string",
+            "description": "Client ID of your Reddit script app (https://www.reddit.com/prefs/apps). Required to run on Apify — Reddit blocks unauthenticated requests from cloud IPs.",
+            "editor": "textfield",
+            "groupCaption": "Reddit API credentials (required on Apify)",
+            "groupDescription": "Create a free Reddit 'script' app at reddit.com/prefs/apps. Use your own Reddit account credentials."
+        },
+        "redditClientSecret": {
+            "title": "Reddit app client secret",
+            "type": "string",
+            "description": "Client secret from your Reddit script app.",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "redditUsername": {
+            "title": "Reddit username",
+            "type": "string",
+            "description": "Your Reddit account username (without the u/ prefix).",
+            "editor": "textfield"
+        },
+        "redditPassword": {
+            "title": "Reddit password",
+            "type": "string",
+            "description": "Your Reddit account password.",
+            "editor": "textfield",
+            "isSecret": true
         }
     }
 }
